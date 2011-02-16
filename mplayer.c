@@ -1323,7 +1323,7 @@ static void print_status(struct MPContext *mpctx, double a_pos, bool at_frame)
 #ifdef CONFIG_STREAM_CACHE
   // cache stats
   if (stream_cache_size > 0)
-    saddf(line, &pos, width, "%d%% ", cache_fill_status);
+    saddf(line, &pos, width, "%d%% ", cache_fill_status(mpctx->stream));
 #endif
 
   // other
@@ -1928,7 +1928,10 @@ void update_subtitles(struct MPContext *mpctx, double refpts,
             len = ds_get_packet_sub(d_sub, &packet);
             if (is_av_sub(type)) {
 #ifdef CONFIG_FFMPEG
-                decode_avsub(sh_sub, packet, len, subpts, duration);
+                int ret = decode_avsub(sh_sub, packet, len, subpts, duration);
+                if (ret < 0)
+                    mp_msg(MSGT_SPUDEC, MSGL_WARN, "lavc failed decoding "
+                           "subtitle\n");
 #endif
                 continue;
             }
@@ -2865,23 +2868,27 @@ static void pause_loop(struct MPContext *mpctx)
 {
     struct MPOpts *opts = &mpctx->opts;
     mp_cmd_t* cmd;
+#ifdef CONFIG_STREAM_CACHE
+    int old_cache_fill = stream_cache_size > 0 ?
+        cache_fill_status(mpctx->stream) : 0;
+#endif
     if (!opts->quiet) {
 	if (opts->term_osd && !mpctx->sh_video) {
 	    set_osd_tmsg(OSD_MSG_PAUSE, 1, 0, "  =====  PAUSE  =====");
 	    update_osd_msg(mpctx);
 	} else
-	    mp_msg(MSGT_CPLAYER, MSGL_STATUS, "%c%s%c",
-                   '\n', mp_gtext("  =====  PAUSE  ====="), '\r');
+	    mp_msg(MSGT_CPLAYER, MSGL_STATUS, "\n%s\r",
+                   mp_gtext("  =====  PAUSE  ====="));
         mp_msg(MSGT_IDENTIFY, MSGL_INFO, "ID_PAUSED\n");
     }
 
     while ( (cmd = mp_input_get_cmd(mpctx->input, 20, 1)) == NULL
             || cmd->id == MP_CMD_SET_MOUSE_POS || cmd->pausing == 4) {
 	if (cmd) {
-	  cmd = mp_input_get_cmd(mpctx->input, 0, 0);
-	  run_command(mpctx, cmd);
-	  mp_cmd_free(cmd);
-	  continue;
+            cmd = mp_input_get_cmd(mpctx->input, 0, 0);
+            run_command(mpctx, cmd);
+            mp_cmd_free(cmd);
+            continue;
 	}
 	if (mpctx->sh_video && mpctx->video_out)
 	    vo_check_events(mpctx->video_out);
@@ -2890,11 +2897,28 @@ static void pause_loop(struct MPContext *mpctx)
             vf_menu_pause_update(vf_menu);
 #endif
 	usec_sleep(20000);
-      update_osd_msg(mpctx);
-      int hack = vo_osd_changed(0);
-      vo_osd_changed(hack);
-      if (hack)
-          break;
+        update_osd_msg(mpctx);
+        int hack = vo_osd_changed(0);
+        vo_osd_changed(hack);
+        if (hack)
+            break;
+#ifdef CONFIG_STREAM_CACHE
+        if (!opts->quiet && stream_cache_size > 0) {
+            int new_cache_fill = cache_fill_status(mpctx->stream);
+            if (new_cache_fill != old_cache_fill) {
+                if (opts->term_osd && !mpctx->sh_video) {
+                    set_osd_tmsg(OSD_MSG_PAUSE, 1, 0, "%s %d%%",
+                                 mp_gtext("  =====  PAUSE  ====="),
+                                 new_cache_fill);
+                    update_osd_msg(mpctx);
+                } else
+                    mp_msg(MSGT_CPLAYER, MSGL_STATUS, "%s %d%%\r",
+                           mp_gtext("  =====  PAUSE  ====="),
+                           new_cache_fill);
+                old_cache_fill = new_cache_fill;
+            }
+        }
+#endif
     }
 }
 
@@ -3937,7 +3961,7 @@ int i;
     }
     mpctx->key_fifo = mp_fifo_create(opts);
 
-  print_version("MPlayer");
+  print_version("MPlayer2");
 
 #if defined(__MINGW32__) || defined(__CYGWIN__)
 	{
